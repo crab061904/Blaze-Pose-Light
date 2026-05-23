@@ -1,5 +1,6 @@
 import cv2
 import mediapipe as mp
+import numpy as np
 import time
 import urllib.request
 import os
@@ -17,6 +18,17 @@ BaseOptions = mp.tasks.BaseOptions
 PoseLandmarker = mp.tasks.vision.PoseLandmarker
 PoseLandmarkerOptions = mp.tasks.vision.PoseLandmarkerOptions
 VisionRunningMode = mp.tasks.vision.RunningMode
+
+def calculate_angle(a, b, c):
+    """Calculates the angle at vertex b formed by points a, b, c."""
+    a = np.array([a.x, a.y])
+    b = np.array([b.x, b.y])
+    c = np.array([c.x, c.y])
+    radians = np.arctan2(c[1]-b[1], c[0]-b[0]) - np.arctan2(a[1]-b[1], a[0]-b[0])
+    angle = np.abs(radians * 180.0 / np.pi)
+    if angle > 180.0:
+        angle = 360.0 - angle
+    return angle
 
 # We need a global variable to store the real-time landmark coordinates
 latest_result = None
@@ -38,14 +50,21 @@ options = PoseLandmarkerOptions(
 # 3. Create the landmarker instance
 landmarker = PoseLandmarker.create_from_options(options)
 
-# 4. Map out how the 33 joints connect to draw the skeleton
+# 4. Map out how the joints connect — no face (0-10) or hand fingers (17-22)
 POSE_CONNECTIONS = [
-    (0, 1), (1, 2), (2, 3), (3, 7), (0, 4), (4, 5), (5, 6), (6, 8), (9, 10), 
-    (11, 12), (11, 13), (13, 15), (15, 17), (15, 19), (15, 21), (17, 19), 
-    (12, 14), (14, 16), (16, 18), (16, 20), (16, 22), (18, 20), (11, 23), 
-    (12, 24), (23, 24), (23, 25), (24, 26), (25, 27), (26, 28), (27, 29), 
-    (28, 30), (29, 31), (30, 32), (27, 31), (28, 32)
+    # Torso
+    (11, 12), (11, 23), (12, 24), (23, 24),
+    # Arms (shoulder → elbow → wrist only)
+    (11, 13), (13, 15),
+    (12, 14), (14, 16),
+    # Legs
+    (23, 25), (24, 26), (25, 27), (26, 28),
+    # Feet
+    (27, 29), (28, 30), (29, 31), (30, 32), (27, 31), (28, 32),
 ]
+
+# Landmarks to skip when drawing dots: face (0-10) and hand fingers (17-22)
+SKIP_LANDMARKS = set(range(0, 11)) | set(range(17, 23))
 
 # 5. Start Video Capture
 cap = cv2.VideoCapture(0)
@@ -91,13 +110,38 @@ while cap.isOpened():
                 
                 cv2.line(frame, (x_start, y_start), (x_end, y_end), (245, 66, 230), 2)
                 
-            # Draw the landmark dots (joints)
-            for landmark in pose_landmarks:
+            # Draw the landmark dots (joints), skipping face and hand fingers
+            for idx, landmark in enumerate(pose_landmarks):
+                if idx in SKIP_LANDMARKS:
+                    continue
                 x = int(landmark.x * w)
                 y = int(landmark.y * h)
                 cv2.circle(frame, (x, y), 4, (245, 117, 66), -1)
 
-    cv2.imshow('BlazePose-Lite Tracker (Modern API)', frame)
+            # Arm angle overlay for both arms
+            for shoulder_idx, elbow_idx, wrist_idx in [(11, 13, 15), (12, 14, 16)]:
+                shoulder = pose_landmarks[shoulder_idx]
+                elbow    = pose_landmarks[elbow_idx]
+                wrist    = pose_landmarks[wrist_idx]
+
+                shoulder_px = (int(shoulder.x * w), int(shoulder.y * h))
+                elbow_px    = (int(elbow.x * w),    int(elbow.y * h))
+                wrist_px    = (int(wrist.x * w),    int(wrist.y * h))
+
+                angle = calculate_angle(shoulder, elbow, wrist)
+
+                cv2.line(frame, shoulder_px, elbow_px, (255, 255, 255), 4)
+                cv2.line(frame, elbow_px, wrist_px, (255, 255, 255), 4)
+
+                cv2.circle(frame, shoulder_px, 8, (0, 255, 0), -1)
+                cv2.circle(frame, elbow_px,    8, (0, 255, 0), -1)
+                cv2.circle(frame, wrist_px,    8, (0, 255, 0), -1)
+
+                cv2.putText(frame, str(int(angle)),
+                            (elbow_px[0] + 20, elbow_px[1]),
+                            cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 2, cv2.LINE_AA)
+
+    cv2.imshow('BlazePose-Lite Tracker (Press Q to Quit)', frame)
 
     if cv2.waitKey(1) & 0xFF == ord('q'):
         break
